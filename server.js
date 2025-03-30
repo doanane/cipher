@@ -30,10 +30,13 @@ app.use authenticate =  (req, res, next) =>{
     const iv = crypto.randomBytes(IV_LENGTH);
     const input =fs.createReadStream(filePath);
     const cipher= crypto.createCipheriv("aes-265-cbc");
+    const encryptedPath = filePath + ".enc";
+    const output  = fs.createWriteStream(encryptedPath);
+
+    input.pipe(cipher).pipe(output);
+    return {encryptedPath, iv:}
 
 
 
 
-
-    
  }
