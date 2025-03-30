@@ -27,5 +27,13 @@ app.use authenticate =  (req, res, next) =>{
 
 
  const encryption = (filePath) => {
-    const iv = crypto.randomBytes(IV_LENGTH)
+    const iv = crypto.randomBytes(IV_LENGTH);
+    const input =fs.createReadStream(filePath);
+    const cipher= crypto.createCipheriv("aes-265-cbc");
+
+
+
+
+
+    
  }
