@@ -24,3 +24,8 @@ app.use authenticate =  (req, res, next) =>{
     next();
 
  }
+
+
+ const encryption = (filePath) => {
+    const iv = crypto.randomBytes(IV_LENGTH)
+ }
