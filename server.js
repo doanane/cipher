@@ -10,4 +10,17 @@ const PORT = process.env.PORT || 5000;
 const API_KEY = process.API_KEY || 'desmond123';
 
 const upload = multer({dest: '/upload'});
-const fileData 
+const fileData  = ["pdf", "jpp", "png"];
+const IV_LENGTH = 16;
+
+
+app.use(express.json)
+app.use(require("cors")());
+app.use authenticate =  (req, res, next) =>{
+    const api = req.header["x-api-key"];
+    if (apiKey !== API_KEY){
+        return res.status(403).json({error: invalid });
+    }
+    next();
+
+ }
