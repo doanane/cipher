@@ -34,7 +34,7 @@ app.use authenticate =  (req, res, next) =>{
     const output  = fs.createWriteStream(encryptedPath);
 
     input.pipe(cipher).pipe(output);
-    return {encryptedPath, iv:}
+    return {encryptedPath, iv:iv}
 
 
 
