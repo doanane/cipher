@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Secure File Sharing</title>
+  <style>
+    body { font-family: Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; }
+    .section { margin-bottom: 20px; padding: 20px; border: 1px solid #ddd; border-radius: 5px; }
+    button { background: #4CAF50; color: white; border: none; padding: 10px 15px; cursor: pointer; }
+    button:hover { background: #45a049; }
+    input, textarea { width: 100%; padding: 8px; margin: 5px 0 15px; }
+    .status { margin: 10px 0; padding: 10px; border-radius: 4px; }
+    .success { background: #dff0d8; color: #3c763d; }
+    .error { background: #f2dede; color: #a94442; }
+    .file-item { padding: 10px; margin: 5px 0; border: 1px solid #eee; }
+    .access-log { font-family: monospace; margin: 10px 0; padding: 10px; background: #f5f5f5; border-radius: 4px; }
+    .ip-address { color: #0066cc; word-break: break-all; }
+    .download-btn { margin-left: 10px; }
+  </style>
+</head>
+<body>
+  <h1>Secure File Sharing</h1>
+  
+  <div class="section">
+    <h2>Upload File</h2>
+    <input type="file" id="fileInput"><br>
+    <input type="password" id="uploadKey" placeholder="Set encryption key"><br>
+    <button onclick="uploadFile()">Upload & Encrypt</button>
+    <div id="uploadStatus" class="status"></div>
+  </div>
+  
+  <div class="section">
+    <h2>Your Files</h2>
+    <div id="fileList">Loading files...</div>
+  </div>
+
+  <div class="section" id="downloadSection" style="display:none;">
+    <h2>File Details</h2>
+    <div id="fileInfo"></div>
+    <input type="password" id="downloadKey" placeholder="Enter encryption key">
+    <button onclick="downloadFile()">Download & Decrypt</button>
+    <div id="downloadStatus" class="status"></div>
+  </div>
+
+  <script>
+    let currentFileId = null;
+    let currentFileName = null;
+
+    function showStatus(element, message, isError = false) {
+      element.textContent = message;
+      element.className = isError ? 'status error' : 'status success';
+    }
+
+    async function uploadFile() {
+      const fileInput = document.getElementById('fileInput');
+      const key = document.getElementById('uploadKey').value;
+      const statusElement = document.getElementById('uploadStatus');
+      
+      if (!fileInput.files.length || !key) {
+        showStatus(statusElement, 'Please select a file and set an encryption key', true);
+        return;
+      }
+      
+      try {
+        showStatus(statusElement, 'Encrypting and uploading...');
+        
+        const formData = new FormData();
+        formData.append('file', fileInput.files[0]);
+        formData.append('key', key);
+        
+        const response = await fetch('/api/upload', {
+          method: 'POST',
+          body: formData
+        });
+        
+        if (!response.ok) {
+          const error = await response.json();
+          throw new Error(error.error || 'Upload failed');
+        }
+        
+        const data = await response.json();
+        showStatus(statusElement, `File "${data.name}" uploaded successfully! ID: ${data.id}`);
+        fileInput.value = '';
+        document.getElementById('uploadKey').value = '';
+        loadFiles();
+      } catch (error) {
+        showStatus(statusElement, `Upload failed: ${error.message}`, true);
+      }
+    }
+
+    async function loadFiles() {
+      try {
+        const response = await fetch('/api/files');
+        if (!response.ok) throw new Error('Failed to load files');
+        
+        const files = await response.json();
+        const fileList = document.getElementById('fileList');
+        
+        fileList.innerHTML = files.length > 0 
+          ? files.map(file => `
+              <div class="file-item">
+                <strong>${file.name}</strong>
+                <small>(${file.accessCount} ${file.accessCount === 1 ? 'access' : 'accesses'})</small>
+                <button class="download-btn" onclick="showFileDetails('${file.id}', '${file.name}')">
+                  View Details
+                </button>
+              </div>
+            `).join('')
+          : '<p>No files uploaded yet</p>';
+      } catch (error) {
+        document.getElementById('fileList').innerHTML = `
+          <p class="error">Error loading files: ${error.message}</p>
+        `;
+      }
+    }
+
+    async function showFileDetails(fileId, fileName) {
+      try {
+        const response = await fetch(`/api/file/${fileId}`);
+        if (!response.ok) throw new Error('Failed to get file details');
+        
+        const file = await response.json();
+        currentFileId = fileId;
+        currentFileName = fileName;
+        
+        document.getElementById('fileInfo').innerHTML = `
+          <h3>${file.name}</h3>
+          <p>Uploaded: ${new Date(file.uploadDate).toLocaleString()}</p>
+          <p>Total accesses: ${file.accessCount}</p>
+          
+          <h4>Access History:</h4>
+          ${file.accessLogs.length > 0 
+            ? file.accessLogs.map(log => `
+                <div class="access-log">
+                  <div>Time: ${new Date(log.timestamp).toLocaleString()}</div>
+                  <div>IP: <span class="ip-address">${log.ip}</span></div>
+                  <div>Action: ${log.action.replace('_', ' ')} ${log.error ? `(${log.error.replace('_', ' ')})` : ''}</div>
+                </div>
+              `).join('')
+            : '<p>No access history yet</p>'}
+        `;
+        
+        document.getElementById('downloadSection').style.display = 'block';
+        document.getElementById('downloadStatus').textContent = '';
+        document.getElementById('downloadKey').value = '';
+      } catch (error) {
+        document.getElementById('fileInfo').innerHTML = `
+          <p class="error">Error loading file details: ${error.message}</p>
+        `;
+      }
+    }
+
+    async function downloadFile() {
+      const key = document.getElementById('downloadKey').value;
+      const statusElement = document.getElementById('downloadStatus');
+      
+      if (!currentFileId || !key) {
+        showStatus(statusElement, 'Please enter the encryption key', true);
+        return;
+      }
+      
+      try {
+        showStatus(statusElement, 'Preparing download...');
+        
+        const response = await fetch('/api/download', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ id: currentFileId, key })
+        });
+        
+        if (!response.ok) {
+          const error = await response.json();
+          throw new Error(error.error || 'Download failed');
+        }
+        
+        const blob = await response.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = currentFileName;
+        document.body.appendChild(a);
+        a.click();
+        URL.revokeObjectURL(url);
+        
+        showStatus(statusElement, 'Download completed successfully!');
+        loadFiles();
+      } catch (error) {
+        showStatus(statusElement, `Download failed: ${error.message}`, true);
+      }
+    }
+
+    document.addEventListener('DOMContentLoaded', loadFiles);
+  </script>
+</body>
+</html>
