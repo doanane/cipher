@@ -1,31 +1,34 @@
 const express = require('express');
 const multer = require('multer');
 const crypto = require('crypto');
-const fs = require('fs');
-const path = require('path');
 const cors = require('cors');
+const path = require('path');
 
 const app = express();
-const PORT = 3001;
-const upload = multer({ dest: 'uploads/' });
+const upload = multer({ storage: multer.memoryStorage() }); // Using memory storage for Vercel
 
-// Initialize databases
+// Initialize databases (using in-memory storage for files in Vercel)
 const filesDB = [];
 const accessLogs = {};
 
-if (!fs.existsSync('uploads')) fs.mkdirSync('uploads');
-if (!fs.existsSync('encrypted_files')) fs.mkdirSync('encrypted_files');
+// Middleware
+app.use(cors({
+  origin: '*',
+  methods: ['GET', 'POST', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization']
+}));
+app.use(express.json({ limit: '10mb' }));
+app.use(express.static(path.join(__dirname, 'public')));
 
-app.use(cors());
-app.use(express.json());
-app.use(express.static('public'));
-
+// Enhanced IP address capture
 const getClientIp = (req) => {
-  return req.headers['x-forwarded-for']?.split(',')[0].trim() || 
-         req.headers['x-real-ip'] || 
-         req.connection.remoteAddress;
+  const ipChain = req.headers['x-forwarded-for'] || 
+                 req.headers['x-real-ip'] || 
+                 req.connection.remoteAddress;
+  return ipChain.split(',')[0].trim();
 };
 
+// Encryption functions
 const encryptFile = (buffer, key) => {
   const iv = crypto.randomBytes(16);
   const cipher = crypto.createCipheriv('aes-256-cbc', Buffer.from(key.padEnd(32, '0')), iv);
@@ -34,8 +37,15 @@ const encryptFile = (buffer, key) => {
 };
 
 const decryptFile = (encrypted, key) => {
-  const decipher = crypto.createDecipheriv('aes-256-cbc', Buffer.from(key.padEnd(32, '0')), Buffer.from(encrypted.iv, 'hex'));
-  return Buffer.concat([decipher.update(Buffer.from(encrypted.content, 'hex')), decipher.final()]);
+  const decipher = crypto.createDecipheriv(
+    'aes-256-cbc', 
+    Buffer.from(key.padEnd(32, '0')), 
+    Buffer.from(encrypted.iv, 'hex')
+  );
+  return Buffer.concat([
+    decipher.update(Buffer.from(encrypted.content, 'hex')),
+    decipher.final()
+  ]);
 };
 
 // File upload endpoint
@@ -45,33 +55,39 @@ app.post('/api/upload', upload.single('file'), (req, res) => {
       return res.status(400).json({ error: 'File and encryption key are required' });
     }
 
-    const fileBuffer = fs.readFileSync(req.file.path);
-    const encrypted = encryptFile(fileBuffer, req.body.key);
+    const encrypted = encryptFile(req.file.buffer, req.body.key);
     const fileId = crypto.randomBytes(8).toString('hex');
     
-    // Save encrypted file
-    fs.writeFileSync(`encrypted_files/${fileId}.enc`, JSON.stringify(encrypted));
-    fs.unlinkSync(req.file.path);
-
-    // Add to database
+    // Store in memory instead of filesystem for Vercel
     filesDB.push({
       id: fileId,
       name: req.file.originalname,
       type: req.file.mimetype,
+      size: req.file.size,
       uploadDate: new Date().toISOString(),
-      accessCount: 0
+      accessCount: 0,
+      encryptedData: encrypted // Storing encrypted data directly
     });
 
     // Initialize access logs
-    accessLogs[fileId] = [];
+    accessLogs[fileId] = [{
+      timestamp: new Date().toISOString(),
+      ip: getClientIp(req),
+      action: 'upload'
+    }];
 
     res.json({ 
       success: true, 
       id: fileId,
-      name: req.file.originalname
+      name: req.file.originalname,
+      size: req.file.size
     });
   } catch (err) {
-    res.status(500).json({ error: 'File upload failed' });
+    console.error('Upload error:', err);
+    res.status(500).json({ 
+      error: 'File upload failed',
+      details: process.env.NODE_ENV === 'development' ? err.message : undefined
+    });
   }
 });
 
@@ -86,13 +102,10 @@ app.post('/api/download', (req, res) => {
     const file = filesDB.find(f => f.id === id);
     if (!file) return res.status(404).json({ error: 'File not found' });
 
-    // Get client IP
     const clientIp = getClientIp(req);
-    console.log(`Download attempt from IP: ${clientIp}`);
 
     try {
-      const encrypted = JSON.parse(fs.readFileSync(`encrypted_files/${id}.enc`));
-      const decrypted = decryptFile(encrypted, key);
+      const decrypted = decryptFile(file.encryptedData, key);
 
       // Log successful download
       file.accessCount++;
@@ -105,7 +118,8 @@ app.post('/api/download', (req, res) => {
       res.set({
         'Content-Type': file.type,
         'Content-Disposition': `attachment; filename="${encodeURIComponent(file.name)}"`,
-        'Content-Length': decrypted.length
+        'Content-Length': decrypted.length,
+        'X-File-ID': file.id
       });
       return res.send(decrypted);
     } catch (decryptError) {
@@ -123,7 +137,11 @@ app.post('/api/download', (req, res) => {
       throw decryptError;
     }
   } catch (err) {
-    res.status(500).json({ error: 'File download failed' });
+    console.error('Download error:', err);
+    res.status(500).json({ 
+      error: 'File download failed',
+      details: process.env.NODE_ENV === 'development' ? err.message : undefined
+    });
   }
 });
 
@@ -132,6 +150,7 @@ app.get('/api/files', (req, res) => {
   res.json(filesDB.map(f => ({
     id: f.id,
     name: f.name,
+    size: f.size,
     uploadDate: f.uploadDate,
     accessCount: f.accessCount
   })));
@@ -148,6 +167,18 @@ app.get('/api/file/:id', (req, res) => {
   });
 });
 
-app.listen(PORT, '0.0.0.0', () => {
-  console.log(`Server running on http://localhost:${PORT}`);
+// Client-side routing fallback
+app.get('*', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
+
+// Export for Vercel
+module.exports = app;
+
+// Local development server
+if (require.main === module) {
+  const PORT = process.env.PORT || 3001;
+  app.listen(PORT, () => {
+    console.log(`Server running on http://localhost:${PORT}`);
+  });
+}
