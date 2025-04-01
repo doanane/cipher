@@ -1,25 +1,22 @@
 const express = require('express');
 const multer = require('multer');
 const crypto = require('crypto');
-const fs = require('fs');
-const path = require('path');
 const cors = require('cors');
 
 const app = express();
-const PORT = 3001;
-const upload = multer({ dest: 'uploads/' });
+const PORT = process.env.PORT || 3001;
+const upload = multer({ storage: multer.memoryStorage() });
 
-// Initialize databases
+// Initialize databases (in-memory storage)
 const filesDB = [];
 const accessLogs = {};
 
-if (!fs.existsSync('uploads')) fs.mkdirSync('uploads');
-if (!fs.existsSync('encrypted_files')) fs.mkdirSync('encrypted_files');
-
+// Middleware
 app.use(cors());
 app.use(express.json());
 app.use(express.static('public'));
 
+// Helper functions
 const getClientIp = (req) => {
   return req.headers['x-forwarded-for']?.split(',')[0].trim() || 
          req.headers['x-real-ip'] || 
@@ -38,63 +35,62 @@ const decryptFile = (encrypted, key) => {
   return Buffer.concat([decipher.update(Buffer.from(encrypted.content, 'hex')), decipher.final()]);
 };
 
-// File upload endpoint
+// Routes
 app.post('/api/upload', upload.single('file'), (req, res) => {
   try {
+    console.log('Upload request received');
     if (!req.file || !req.body.key) {
+      console.log('Missing file or key');
       return res.status(400).json({ error: 'File and encryption key are required' });
     }
 
-    const fileBuffer = fs.readFileSync(req.file.path);
-    const encrypted = encryptFile(fileBuffer, req.body.key);
+    const encrypted = encryptFile(req.file.buffer, req.body.key);
     const fileId = crypto.randomBytes(8).toString('hex');
     
-    // Save encrypted file
-    fs.writeFileSync(`encrypted_files/${fileId}.enc`, JSON.stringify(encrypted));
-    fs.unlinkSync(req.file.path);
-
-    // Add to database
     filesDB.push({
       id: fileId,
       name: req.file.originalname,
       type: req.file.mimetype,
       uploadDate: new Date().toISOString(),
-      accessCount: 0
+      accessCount: 0,
+      encryptedData: encrypted
     });
 
-    // Initialize access logs
     accessLogs[fileId] = [];
 
+    console.log(`File uploaded successfully: ${fileId}`);
     res.json({ 
       success: true, 
       id: fileId,
       name: req.file.originalname
     });
   } catch (err) {
+    console.error('Upload error:', err);
     res.status(500).json({ error: 'File upload failed' });
   }
 });
 
-// File download endpoint
 app.post('/api/download', (req, res) => {
   try {
+    console.log('Download request received');
     const { id, key } = req.body;
     if (!id || !key) {
+      console.log('Missing ID or key');
       return res.status(400).json({ error: 'File ID and key are required' });
     }
 
     const file = filesDB.find(f => f.id === id);
-    if (!file) return res.status(404).json({ error: 'File not found' });
+    if (!file) {
+      console.log('File not found:', id);
+      return res.status(404).json({ error: 'File not found' });
+    }
 
-    // Get client IP
     const clientIp = getClientIp(req);
     console.log(`Download attempt from IP: ${clientIp}`);
 
     try {
-      const encrypted = JSON.parse(fs.readFileSync(`encrypted_files/${id}.enc`));
-      const decrypted = decryptFile(encrypted, key);
+      const decrypted = decryptFile(file.encryptedData, key);
 
-      // Log successful download
       file.accessCount++;
       accessLogs[id].push({
         timestamp: new Date().toISOString(),
@@ -107,9 +103,10 @@ app.post('/api/download', (req, res) => {
         'Content-Disposition': `attachment; filename="${encodeURIComponent(file.name)}"`,
         'Content-Length': decrypted.length
       });
+      console.log('File download successful:', id);
       return res.send(decrypted);
     } catch (decryptError) {
-      // Log failed attempt
+      console.error('Decryption error:', decryptError);
       accessLogs[id].push({
         timestamp: new Date().toISOString(),
         ip: clientIp,
@@ -123,12 +120,13 @@ app.post('/api/download', (req, res) => {
       throw decryptError;
     }
   } catch (err) {
+    console.error('Download error:', err);
     res.status(500).json({ error: 'File download failed' });
   }
 });
 
-// Get all files
 app.get('/api/files', (req, res) => {
+  console.log('Files list requested');
   res.json(filesDB.map(f => ({
     id: f.id,
     name: f.name,
@@ -137,10 +135,13 @@ app.get('/api/files', (req, res) => {
   })));
 });
 
-// Get file details
 app.get('/api/file/:id', (req, res) => {
+  console.log('File details requested:', req.params.id);
   const file = filesDB.find(f => f.id === req.params.id);
-  if (!file) return res.status(404).json({ error: 'File not found' });
+  if (!file) {
+    console.log('File not found:', req.params.id);
+    return res.status(404).json({ error: 'File not found' });
+  }
 
   res.json({
     ...file,
@@ -148,6 +149,7 @@ app.get('/api/file/:id', (req, res) => {
   });
 });
 
-app.listen(PORT, '0.0.0.0', () => {
+// Start server
+app.listen(PORT, () => {
   console.log(`Server running on http://localhost:${PORT}`);
 });
