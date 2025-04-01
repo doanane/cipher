@@ -2,45 +2,67 @@ const express = require('express');
 const multer = require('multer');
 const crypto = require('crypto');
 const cors = require('cors');
+const path = require('path');
 
 const app = express();
-const PORT = process.env.PORT || 3001;
 const upload = multer({ storage: multer.memoryStorage() });
 
 // Initialize databases (in-memory storage)
 const filesDB = [];
 const accessLogs = {};
 
-// Middleware
-app.use(cors());
-app.use(express.json());
-app.use(express.static('public'));
+// Enhanced middleware
+app.use(cors({
+  origin: '*',
+  methods: ['GET', 'POST', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization']
+}));
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true }));
+app.use(express.static(path.join(__dirname, 'public')));
 
-// Helper functions
+// Improved IP detection
 const getClientIp = (req) => {
-  return req.headers['x-forwarded-for']?.split(',')[0].trim() || 
-         req.headers['x-real-ip'] || 
-         req.connection.remoteAddress;
+  const headers = [
+    req.headers['x-forwarded-for'],
+    req.headers['x-real-ip'],
+    req.connection?.remoteAddress,
+    req.socket?.remoteAddress
+  ].filter(Boolean);
+
+  const ipList = headers.flatMap(header => 
+    header.includes(',') ? header.split(',').map(ip => ip.trim()) : [header]
+  );
+
+  return ipList[0] || 'unknown';
 };
 
+// File encryption/decryption
 const encryptFile = (buffer, key) => {
   const iv = crypto.randomBytes(16);
   const cipher = crypto.createCipheriv('aes-256-cbc', Buffer.from(key.padEnd(32, '0')), iv);
-  const encrypted = Buffer.concat([cipher.update(buffer), cipher.final()]);
-  return { iv: iv.toString('hex'), content: encrypted.toString('hex') };
+  return {
+    iv: iv.toString('hex'),
+    content: Buffer.concat([cipher.update(buffer), cipher.final()]).toString('hex')
+  };
 };
 
 const decryptFile = (encrypted, key) => {
-  const decipher = crypto.createDecipheriv('aes-256-cbc', Buffer.from(key.padEnd(32, '0')), Buffer.from(encrypted.iv, 'hex'));
-  return Buffer.concat([decipher.update(Buffer.from(encrypted.content, 'hex')), decipher.final()]);
+  const decipher = crypto.createDecipheriv(
+    'aes-256-cbc',
+    Buffer.from(key.padEnd(32, '0')),
+    Buffer.from(encrypted.iv, 'hex')
+  );
+  return Buffer.concat([
+    decipher.update(Buffer.from(encrypted.content, 'hex')),
+    decipher.final()
+  ]);
 };
 
-// Routes
+// API Routes
 app.post('/api/upload', upload.single('file'), (req, res) => {
   try {
-    console.log('Upload request received');
     if (!req.file || !req.body.key) {
-      console.log('Missing file or key');
       return res.status(400).json({ error: 'File and encryption key are required' });
     }
 
@@ -56,9 +78,12 @@ app.post('/api/upload', upload.single('file'), (req, res) => {
       encryptedData: encrypted
     });
 
-    accessLogs[fileId] = [];
+    accessLogs[fileId] = [{
+      timestamp: new Date().toISOString(),
+      ip: getClientIp(req),
+      action: 'upload'
+    }];
 
-    console.log(`File uploaded successfully: ${fileId}`);
     res.json({ 
       success: true, 
       id: fileId,
@@ -72,29 +97,21 @@ app.post('/api/upload', upload.single('file'), (req, res) => {
 
 app.post('/api/download', (req, res) => {
   try {
-    console.log('Download request received');
     const { id, key } = req.body;
     if (!id || !key) {
-      console.log('Missing ID or key');
       return res.status(400).json({ error: 'File ID and key are required' });
     }
 
     const file = filesDB.find(f => f.id === id);
-    if (!file) {
-      console.log('File not found:', id);
-      return res.status(404).json({ error: 'File not found' });
-    }
-
-    const clientIp = getClientIp(req);
-    console.log(`Download attempt from IP: ${clientIp}`);
+    if (!file) return res.status(404).json({ error: 'File not found' });
 
     try {
       const decrypted = decryptFile(file.encryptedData, key);
-
       file.accessCount++;
+      
       accessLogs[id].push({
         timestamp: new Date().toISOString(),
-        ip: clientIp,
+        ip: getClientIp(req),
         action: 'download'
       });
 
@@ -103,13 +120,11 @@ app.post('/api/download', (req, res) => {
         'Content-Disposition': `attachment; filename="${encodeURIComponent(file.name)}"`,
         'Content-Length': decrypted.length
       });
-      console.log('File download successful:', id);
       return res.send(decrypted);
     } catch (decryptError) {
-      console.error('Decryption error:', decryptError);
       accessLogs[id].push({
         timestamp: new Date().toISOString(),
-        ip: clientIp,
+        ip: getClientIp(req),
         action: 'failed_attempt',
         error: decryptError.message.includes('bad decrypt') ? 'invalid_key' : 'decryption_error'
       });
@@ -126,7 +141,6 @@ app.post('/api/download', (req, res) => {
 });
 
 app.get('/api/files', (req, res) => {
-  console.log('Files list requested');
   res.json(filesDB.map(f => ({
     id: f.id,
     name: f.name,
@@ -136,12 +150,8 @@ app.get('/api/files', (req, res) => {
 });
 
 app.get('/api/file/:id', (req, res) => {
-  console.log('File details requested:', req.params.id);
   const file = filesDB.find(f => f.id === req.params.id);
-  if (!file) {
-    console.log('File not found:', req.params.id);
-    return res.status(404).json({ error: 'File not found' });
-  }
+  if (!file) return res.status(404).json({ error: 'File not found' });
 
   res.json({
     ...file,
@@ -149,7 +159,18 @@ app.get('/api/file/:id', (req, res) => {
   });
 });
 
-// Start server
-app.listen(PORT, () => {
-  console.log(`Server running on http://localhost:${PORT}`);
+// Client-side routing fallback
+app.get('*', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
+
+// Export for Vercel
+module.exports = app;
+
+// Local development
+if (process.env.NODE_ENV !== 'production') {
+  const PORT = process.env.PORT || 3001;
+  app.listen(PORT, () => {
+    console.log(`Server running on http://localhost:${PORT}`);
+  });
+}
