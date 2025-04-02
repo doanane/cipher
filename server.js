@@ -7,11 +7,9 @@ const path = require('path');
 const app = express();
 const upload = multer({ storage: multer.memoryStorage() }); // Using memory storage for Vercel
 
-// Initialize databases (using in-memory storage for files in Vercel)
 const filesDB = [];
 const accessLogs = {};
 
-// Middleware
 app.use(cors({
   origin: '*',
   methods: ['GET', 'POST', 'OPTIONS'],
@@ -20,7 +18,6 @@ app.use(cors({
 app.use(express.json({ limit: '10mb' }));
 app.use(express.static(path.join(__dirname, 'public')));
 
-// Enhanced IP address capture
 const getClientIp = (req) => {
   const ipChain = req.headers['x-forwarded-for'] || 
                  req.headers['x-real-ip'] || 
@@ -28,7 +25,6 @@ const getClientIp = (req) => {
   return ipChain.split(',')[0].trim();
 };
 
-// Encryption functions
 const encryptFile = (buffer, key) => {
   const iv = crypto.randomBytes(16);
   const cipher = crypto.createCipheriv('aes-256-cbc', Buffer.from(key.padEnd(32, '0')), iv);
@@ -58,7 +54,6 @@ app.post('/api/upload', upload.single('file'), (req, res) => {
     const encrypted = encryptFile(req.file.buffer, req.body.key);
     const fileId = crypto.randomBytes(8).toString('hex');
     
-    // Store in memory instead of filesystem for Vercel
     filesDB.push({
       id: fileId,
       name: req.file.originalname,
@@ -69,7 +64,6 @@ app.post('/api/upload', upload.single('file'), (req, res) => {
       encryptedData: encrypted // Storing encrypted data directly
     });
 
-    // Initialize access logs
     accessLogs[fileId] = [{
       timestamp: new Date().toISOString(),
       ip: getClientIp(req),
@@ -91,7 +85,6 @@ app.post('/api/upload', upload.single('file'), (req, res) => {
   }
 });
 
-// File download endpoint
 app.post('/api/download', (req, res) => {
   try {
     const { id, key } = req.body;
@@ -107,7 +100,6 @@ app.post('/api/download', (req, res) => {
     try {
       const decrypted = decryptFile(file.encryptedData, key);
 
-      // Log successful download
       file.accessCount++;
       accessLogs[id].push({
         timestamp: new Date().toISOString(),
@@ -145,7 +137,6 @@ app.post('/api/download', (req, res) => {
   }
 });
 
-// Get all files
 app.get('/api/files', (req, res) => {
   res.json(filesDB.map(f => ({
     id: f.id,
@@ -156,7 +147,6 @@ app.get('/api/files', (req, res) => {
   })));
 });
 
-// Get file details
 app.get('/api/file/:id', (req, res) => {
   const file = filesDB.find(f => f.id === req.params.id);
   if (!file) return res.status(404).json({ error: 'File not found' });
@@ -167,15 +157,12 @@ app.get('/api/file/:id', (req, res) => {
   });
 });
 
-// Client-side routing fallback
 app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
-// Export for Vercel
 module.exports = app;
 
-// Local development server
 if (require.main === module) {
   const PORT = process.env.PORT || 3001;
   app.listen(PORT, () => {
